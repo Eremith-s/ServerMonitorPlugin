@@ -1,5 +1,7 @@
 # Server Monitor Plugin
 
+[![Sponsor](https://img.shields.io/badge/Sponsor-DeltaDinizzz-EA4AAA?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/DeltaDinizzz)
+
 A lightweight C# plugin for Rust (compatible with both **Oxide** and **Carbon**) designed to broadcast your server's performance metrics in real-time straight to your web dashboard.
 
 ## Installation
@@ -31,13 +33,11 @@ If it detects that no one currently has the web dashboard open in their browser,
 
 ---
 
-## ❤️ Keep the Project Alive!
+## ❤️ Support this project
 
-If my work helps your server grow, please consider supporting the development! I dedicate a lot of free time to create optimized, low-lag plugins for the Rust community. 
+If ServerMonitor helps your server workflow, you can support ongoing development:
 
-[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/T6T4WW645)
-
-- **GitHub Sponsors:** [@DeltaDinizzz](https://github.com/sponsors/DeltaDinizzz)
+- GitHub Sponsors: [@DeltaDinizzz](https://github.com/sponsors/DeltaDinizzz)
 
 ## 💬 Support & Community
 
