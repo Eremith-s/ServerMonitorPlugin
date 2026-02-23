@@ -25,7 +25,7 @@ namespace Oxide.Plugins
         // --- CONFIG ---
         // Altere a URL para o endereço de produção da sua API Next.js na Vercel
         private const string ApiUrl = "https://rustcenter.org/api/server-monitor/ingest";
-        private string Password => (string)Config["Password"];
+        private string ServerToken => (string)Config["ServerToken"];
         
         // --- DYNAMIC INTERVALS (Provided by the Web API) ---
         private float _updateInterval = 2.0f;
@@ -38,11 +38,23 @@ namespace Oxide.Plugins
         // ##StartModule - Oxide Hooks
         protected override void LoadDefaultConfig()
         {
-            Config["Password"] = UnityEngine.Random.Range(1000, 999999).ToString();
-            
-            LogWarning("Config file ServerStats.json was generated. Your new server password is: " + Config["Password"]);
-            
-            Config.Save();
+            Config["ServerToken"] = "SM-" + Guid.NewGuid().ToString("N");
+            SaveConfig();
+        }
+
+        private void Init()
+        {
+            _instance = this;
+            if (Config["ServerToken"] == null || string.IsNullOrEmpty((string)Config["ServerToken"]))
+            {
+                LoadDefaultConfig();
+            }
+
+            Puts("======================================================");
+            Puts(" RustCenter Server Monitor Initialized!");
+            Puts($" Your Web Dashboard Token is: {ServerToken}");
+            Puts(" Use this Token in the Website to control your server.");
+            Puts("======================================================");
         }
 
         private void Init()
@@ -100,7 +112,7 @@ namespace Oxide.Plugins
                 method = "tick_server",
                 serverName = server.Name,
                 serverIp = server.Address + ":" + server.Port,
-                password = Password,
+                token = ServerToken,
                 fps = Performance.current.frameRate,
                 minfps = currentMinFps,
                 ent = BaseNetworkable.serverEntities.Count,
