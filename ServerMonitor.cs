@@ -165,6 +165,23 @@ namespace Oxide.Plugins
                                     nextDelay = _updateInterval;
                                 }
                             }
+                            // C# Native RCON-less execution 
+                            if (jsonResponse.ContainsKey("pendingCommands"))
+                            {
+                                var commandsList = jsonResponse["pendingCommands"] as Newtonsoft.Json.Linq.JArray;
+                                if (commandsList != null)
+                                {
+                                    foreach (var command in commandsList)
+                                    {
+                                        string cmdRaw = command.ToString();
+                                        if (!string.IsNullOrEmpty(cmdRaw))
+                                        {
+                                            Puts($"[ServerMonitor] Executing remote command: {cmdRaw}");
+                                            ConsoleSystem.Run(ConsoleSystem.Option.Server, cmdRaw);
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                     catch { }
