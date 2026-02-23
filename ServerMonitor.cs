@@ -200,6 +200,7 @@ namespace Oxide.Plugins
                 else
                 {
                     // Em caso de erro na rede ou erro 500 na Vercel, entra em sleep forçado para não floodar
+                    Puts($"[ServerMonitor] HTTP Error {code} - Response: {(response ?? "null")}. Sleeping {_sleepInterval}s...");
                     _isSleeping = true;
                     nextDelay = _sleepInterval;
                 }
