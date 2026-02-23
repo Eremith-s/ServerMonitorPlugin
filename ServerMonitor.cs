@@ -33,7 +33,6 @@ namespace Oxide.Plugins
 
         private Timer _loopTimer;
         private bool _isSleeping = false;
-        private int _tickCounter = 0;
         // ##EndModule - Global Variables & Config Properties
 
         // ##StartModule - Oxide Hooks
@@ -84,25 +83,20 @@ namespace Oxide.Plugins
         // ##StartModule - Core Server Tick Logic
         private void SendServerStatsTick()
         {
-            _tickCounter++;
-            // Envia plugins apenas no 1º pulso a cada ~30s (15 ticks de 2s) ou se estiver ativamente em transição
-            bool shouldSendPlugins = (_tickCounter % 15 == 1) || _isSleeping;
-
+            // Coleta plugins
+            var listPlugins = plugins.PluginManager.GetPlugins().ToArray();
             var pluginItems = new List<object>();
 
-            if (shouldSendPlugins)
+            for (var i = 0; i < listPlugins.Length; i++)
             {
-                var listPlugins = plugins.PluginManager.GetPlugins().ToArray();
-                for (var i = 0; i < listPlugins.Length; i++)
+                pluginItems.Add(new
                 {
-                    // Usa chaves curtas 'n' e 'v' ao invés de 'name' e 'version' 
-                    // para não estourar o limite de 10KB do tier free do Pusher Vercel
-                    pluginItems.Add(new
-                    {
-                        n = listPlugins[i].Name,
-                        v = listPlugins[i].Version.ToString()
-                    });
-                }
+                    name = listPlugins[i].Name,
+                    version = listPlugins[i].Version.ToString(),
+                    author = listPlugins[i].Author,
+                    hash = listPlugins[i].Name.GetHashCode(),
+                    time = listPlugins[i].TotalHookTime.TotalSeconds
+                });
             }
 
             int currentMinFps = MinimalFPS;
@@ -126,7 +120,7 @@ namespace Oxide.Plugins
                 uptime = (int)UnityEngine.Time.realtimeSinceStartup,
                 version = server.Version,
                 map = ConVar.Server.level,
-                listPlugins = shouldSendPlugins ? pluginItems : null,
+                listPlugins = pluginItems,
                 isSleeping = _isSleeping
             };
 
@@ -205,10 +199,10 @@ namespace Oxide.Plugins
                 }
                 else
                 {
-                    // Em caso de erro na rede ou erro 500 na Vercel, mostra o erro mas continua tentando no intervalo normal
-                    Puts($"[ServerMonitor] HTTP Error {code} - Response: {(response ?? "null")}. Retrying in {_updateInterval}s...");
-                    _isSleeping = false; // Garante que não está em sleep
-                    nextDelay = _updateInterval; // Tenta de novo rápido
+                    // Em caso de erro na rede ou erro 500 na Vercel, entra em sleep forçado para não floodar
+                    Puts($"[ServerMonitor] HTTP Error {code} - Response: {(response ?? "null")}. Sleeping {_sleepInterval}s...");
+                    _isSleeping = true;
+                    nextDelay = _sleepInterval;
                 }
 
                 // Agenda a próxima execução
