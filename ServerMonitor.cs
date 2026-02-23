@@ -57,10 +57,6 @@ namespace Oxide.Plugins
             Puts("======================================================");
         }
 
-        private void Init()
-        {
-            _instance = this;
-        }
 
         private void OnServerInitialized()
         {
