@@ -23,7 +23,7 @@ namespace Oxide.Plugins
         
         // --- CONFIG ---
         // Altere a URL para o endereço de produção da sua API Next.js na Vercel
-        private string ApiUrl => (string)Config["ApiUrl"];
+        private const string ApiUrl = "https://rustcenter.org/api/server-monitor/ingest";
         private string Password => (string)Config["Password"];
         
         // --- DYNAMIC INTERVALS (Provided by the Web API) ---
@@ -37,7 +37,6 @@ namespace Oxide.Plugins
         // ##StartModule - Oxide Hooks
         protected override void LoadDefaultConfig()
         {
-            Config["ApiUrl"] = "https://rustcenter.org/api/server-monitor/ingest";
             Config["Password"] = UnityEngine.Random.Range(1000, 999999).ToString();
             
             LogWarning("Config file ServerStats.json was generated. Your new server password is: " + Config["Password"]);
