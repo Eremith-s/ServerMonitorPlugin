@@ -20,12 +20,10 @@ The first time the plugin is loaded, it will automatically generate a 🔐 **Ran
 📝 **Default Configuration File** (`oxide/config/ServerStats.json`):
 ```json
 {
-  "ApiUrl": "https://rustcenter.org/api/server-monitor/ingest",
   "Password": "YOUR_GENERATED_PASSWORD_HERE"
 }
 ```
 
-- 🌐 **ApiUrl**: The API route of your website (e.g., Vercel) where the metrics will be sent to. The default is set to `rustcenter.org`.
 - 🔑 **Password**: An auto-generated token that acts as a secure key, proving to the website that the incoming statistics genuinely belong to your server.
 
 ---
