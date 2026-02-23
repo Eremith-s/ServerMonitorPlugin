@@ -102,7 +102,7 @@ namespace Oxide.Plugins
             int currentMinFps = MinimalFPS;
             MinimalFPS = 9999; // Reseta depois de ler
 
-            // Monta o Payload principal  
+            // Monta o Payload principal
             var payload = new
             {
                 method = "tick_server",
@@ -113,11 +113,14 @@ namespace Oxide.Plugins
                 minfps = currentMinFps,
                 ent = BaseNetworkable.serverEntities.Count,
                 online = players.Connected.Count(),
+                maxPlayers = server.MaxPlayers,
                 SleepPlayer = BasePlayer.sleepingPlayerList.Count,
                 JoiningPlayer = ServerMgr.Instance.connectionQueue.Joining,
                 QueuedPlayer = ServerMgr.Instance.connectionQueue.Queued,
+                uptime = (int)Time.realtimeSinceStartup,
+                version = server.Version,
+                map = ConVar.Server.level,
                 listPlugins = pluginItems,
-                // Avisamos a API sobre o nosso estado atual, para ele saber se acabamos de acordar
                 isSleeping = _isSleeping
             };
 
