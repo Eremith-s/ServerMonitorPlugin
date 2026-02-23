@@ -117,7 +117,7 @@ namespace Oxide.Plugins
                 SleepPlayer = BasePlayer.sleepingPlayerList.Count,
                 JoiningPlayer = ServerMgr.Instance.connectionQueue.Joining,
                 QueuedPlayer = ServerMgr.Instance.connectionQueue.Queued,
-                uptime = (int)Time.realtimeSinceStartup,
+                uptime = (int)UnityEngine.Time.realtimeSinceStartup,
                 version = server.Version,
                 map = ConVar.Server.level,
                 listPlugins = pluginItems,
