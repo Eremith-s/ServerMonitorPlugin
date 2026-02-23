@@ -33,6 +33,7 @@ namespace Oxide.Plugins
 
         private Timer _loopTimer;
         private bool _isSleeping = false;
+        private int _tickCounter = 0;
         // ##EndModule - Global Variables & Config Properties
 
         // ##StartModule - Oxide Hooks
@@ -83,20 +84,25 @@ namespace Oxide.Plugins
         // ##StartModule - Core Server Tick Logic
         private void SendServerStatsTick()
         {
-            // Coleta plugins
-            var listPlugins = plugins.PluginManager.GetPlugins().ToArray();
+            _tickCounter++;
+            // Envia plugins apenas no 1º pulso a cada ~30s (15 ticks de 2s) ou se estiver ativamente em transição
+            bool shouldSendPlugins = (_tickCounter % 15 == 1) || _isSleeping;
+
             var pluginItems = new List<object>();
 
-            for (var i = 0; i < listPlugins.Length; i++)
+            if (shouldSendPlugins)
             {
-                pluginItems.Add(new
+                var listPlugins = plugins.PluginManager.GetPlugins().ToArray();
+                for (var i = 0; i < listPlugins.Length; i++)
                 {
-                    name = listPlugins[i].Name,
-                    version = listPlugins[i].Version.ToString(),
-                    author = listPlugins[i].Author,
-                    hash = listPlugins[i].Name.GetHashCode(),
-                    time = listPlugins[i].TotalHookTime.TotalSeconds
-                });
+                    // Usa chaves curtas 'n' e 'v' ao invés de 'name' e 'version' 
+                    // para não estourar o limite de 10KB do tier free do Pusher Vercel
+                    pluginItems.Add(new
+                    {
+                        n = listPlugins[i].Name,
+                        v = listPlugins[i].Version.ToString()
+                    });
+                }
             }
 
             int currentMinFps = MinimalFPS;
@@ -120,7 +126,7 @@ namespace Oxide.Plugins
                 uptime = (int)UnityEngine.Time.realtimeSinceStartup,
                 version = server.Version,
                 map = ConVar.Server.level,
-                listPlugins = pluginItems,
+                listPlugins = shouldSendPlugins ? pluginItems : null,
                 isSleeping = _isSleeping
             };
 
