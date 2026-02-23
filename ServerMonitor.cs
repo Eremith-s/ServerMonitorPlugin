@@ -15,10 +15,10 @@ using Oxide.Core.Libraries;
 namespace Oxide.Plugins
 {
     [Info("ServerMonitor", "DeltaDinizzz", "0.0.1")]
-    public class ServerStats : CovalencePlugin
+    public class ServerMonitor : CovalencePlugin
     {
         // ##StartModule - Global Variables & Config Properties
-        private static ServerStats _instance;
+        private static ServerMonitor _instance;
         private FPSVisor ActiveVisor;
         private int MinimalFPS = 9999;
         
