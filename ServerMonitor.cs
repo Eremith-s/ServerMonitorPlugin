@@ -30,10 +30,14 @@ namespace Oxide.Plugins
         // --- DYNAMIC INTERVALS (Provided by the Web API) ---
         private float _updateInterval = 2.0f;
         private float _sleepInterval = 60.0f;
+        private string _monitorMode = "adaptive"; // adaptive | always_on
+        private bool _shouldCollectFull = true;
 
         private Timer _loopTimer;
         private bool _isSleeping = false;
         private const float MinErrorRetrySeconds = 10.0f;
+        private readonly Dictionary<string, double> _lastHookSecondsByPlugin = new Dictionary<string, double>();
+        private readonly Dictionary<string, double> _maxHookSinceLastTickSecondsByPlugin = new Dictionary<string, double>();
         // ##EndModule - Global Variables & Config Properties
 
         // ##StartModule - Oxide Hooks
@@ -84,20 +88,38 @@ namespace Oxide.Plugins
         // ##StartModule - Core Server Tick Logic
         private void SendServerStatsTick()
         {
-            // Coleta plugins
-            var listPlugins = plugins.PluginManager.GetPlugins().ToArray();
             var pluginItems = new List<object>();
-
-            for (var i = 0; i < listPlugins.Length; i++)
+            if (_shouldCollectFull)
             {
-                pluginItems.Add(new
+                // Coleta plugins
+                var listPlugins = plugins.PluginManager.GetPlugins().ToArray();
+                for (var i = 0; i < listPlugins.Length; i++)
                 {
-                    name = listPlugins[i].Name,
-                    version = listPlugins[i].Version.ToString(),
-                    author = listPlugins[i].Author,
-                    hash = listPlugins[i].Name.GetHashCode(),
-                    time = listPlugins[i].TotalHookTime.TotalSeconds
-                });
+                    var pluginName = listPlugins[i].Name;
+                    var hookSeconds = listPlugins[i].TotalHookTime.TotalSeconds;
+                    double previousHookSeconds;
+                    _lastHookSecondsByPlugin.TryGetValue(pluginName, out previousHookSeconds);
+                    var deltaHookSeconds = Math.Max(0.0, hookSeconds - previousHookSeconds);
+
+                    double previousMaxSinceLastTick;
+                    _maxHookSinceLastTickSecondsByPlugin.TryGetValue(pluginName, out previousMaxSinceLastTick);
+                    var nextMaxSinceLastTick = Math.Max(previousMaxSinceLastTick, deltaHookSeconds);
+                    _maxHookSinceLastTickSecondsByPlugin[pluginName] = nextMaxSinceLastTick;
+                    _lastHookSecondsByPlugin[pluginName] = hookSeconds;
+
+                    pluginItems.Add(new
+                    {
+                        name = pluginName,
+                        version = listPlugins[i].Version.ToString(),
+                        author = listPlugins[i].Author,
+                        hash = pluginName.GetHashCode(),
+                        time = deltaHookSeconds,
+                        hookTimeMs = deltaHookSeconds * 1000.0,
+                        hookMaxSinceLastTickMs = nextMaxSinceLastTick * 1000.0
+                    });
+
+                    _maxHookSinceLastTickSecondsByPlugin[pluginName] = 0.0;
+                }
             }
 
             int currentMinFps = MinimalFPS;
@@ -156,7 +178,20 @@ namespace Oxide.Plugins
                                 float.TryParse(jsonResponse["sleepInterval"].ToString(), out _sleepInterval);
                             }
 
-                            // Se a API informou state "sleep", ninguém está online no site.
+                            if (jsonResponse.ContainsKey("monitorMode"))
+                            {
+                                _monitorMode = jsonResponse["monitorMode"].ToString();
+                            }
+                            if (jsonResponse.ContainsKey("shouldCollectFull"))
+                            {
+                                bool parsedCollectFull;
+                                if (bool.TryParse(jsonResponse["shouldCollectFull"].ToString(), out parsedCollectFull))
+                                {
+                                    _shouldCollectFull = parsedCollectFull;
+                                }
+                            }
+
+                            // Se a API informou state "sleep", ninguém está online no site (modo adaptive).
                             if (jsonResponse.ContainsKey("state"))
                             {
                                 string state = jsonResponse["state"].ToString();
@@ -182,6 +217,12 @@ namespace Oxide.Plugins
                                     _isSleeping = false;
                                     nextDelay = Math.Max(_updateInterval, MinErrorRetrySeconds);
                                 }
+                            }
+
+                            if (_monitorMode == "always_on")
+                            {
+                                _isSleeping = false;
+                                nextDelay = _updateInterval;
                             }
                             // C# Native RCON-less execution 
                             if (jsonResponse.ContainsKey("pendingCommands"))
