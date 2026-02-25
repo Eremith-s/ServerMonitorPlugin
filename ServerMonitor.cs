@@ -14,7 +14,7 @@ using Oxide.Core.Libraries;
 
 namespace Oxide.Plugins
 {
-    [Info("ServerMonitor", "DeltaDinizzz", "0.0.1")]
+    [Info("ServerMonitor", "DeltaDinizzz", "0.0.2")]
     public class ServerMonitor : CovalencePlugin
     {
         // ##StartModule - Global Variables & Config Properties
@@ -33,6 +33,7 @@ namespace Oxide.Plugins
 
         private Timer _loopTimer;
         private bool _isSleeping = false;
+        private const float MinErrorRetrySeconds = 10.0f;
         // ##EndModule - Global Variables & Config Properties
 
         // ##StartModule - Oxide Hooks
@@ -135,7 +136,7 @@ namespace Oxide.Plugins
             // Envia o HTTP POST via WebRequest
             webrequest.Enqueue(ApiUrl, jsonPayload, (code, response) =>
             {
-                float nextDelay = _updateInterval; // Padrão dinâmico na memória (inicialmente 2s)
+                float nextDelay = _isSleeping ? _sleepInterval : _updateInterval;
 
                 if (code == 200 || code == 204)
                 {
@@ -175,6 +176,11 @@ namespace Oxide.Plugins
                                     _isSleeping = false;
                                     nextDelay = _updateInterval;
                                 }
+                                else if (state == "degraded")
+                                {
+                                    _isSleeping = false;
+                                    nextDelay = Math.Max(_updateInterval, MinErrorRetrySeconds);
+                                }
                             }
                             // C# Native RCON-less execution 
                             if (jsonResponse.ContainsKey("pendingCommands"))
@@ -199,10 +205,12 @@ namespace Oxide.Plugins
                 }
                 else
                 {
-                    // Em caso de erro na rede ou erro 500 na Vercel, entra em sleep forçado para não floodar
-                    Puts($"[ServerMonitor] HTTP Error {code} - Response: {(response ?? "null")}. Sleeping {_sleepInterval}s...");
-                    _isSleeping = true;
-                    nextDelay = _sleepInterval;
+                    // Em erro transitório de rede/proxy, aplica backoff curto (não entra em sleep longo).
+                    // Sleep real deve ser controlado pelo state "sleep" vindo da API.
+                    float retryDelay = Mathf.Clamp(Math.Max(_updateInterval * 2.0f, MinErrorRetrySeconds), MinErrorRetrySeconds, _sleepInterval);
+                    Puts($"[ServerMonitor] HTTP Error {code} - Response: {(response ?? "null")}. Retrying in {retryDelay:0.0}s...");
+                    _isSleeping = false;
+                    nextDelay = retryDelay;
                 }
 
                 // Agenda a próxima execução
