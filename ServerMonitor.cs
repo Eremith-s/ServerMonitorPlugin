@@ -166,7 +166,8 @@ namespace Oxide.Plugins
                                         Puts($"[ServerMonitor] Ninguém na dashboard. Entrando em Sleep Mode ({_sleepInterval}s) para economizar recursos...");
                                     
                                     _isSleeping = true;
-                                    nextDelay = _sleepInterval;
+                                    // Keep sleep responsive: cap idle polling to avoid 60s+ wake delays.
+                                    nextDelay = Math.Min(_sleepInterval, 15.0f);
                                 }
                                 else if (state == "active")
                                 {
