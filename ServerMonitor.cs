@@ -353,6 +353,32 @@ namespace Oxide.Plugins
             if (TryReadProcFileValueKb("/proc/self/status", "VmRSS:", out procStatusKb) && procStatusKb > 0)
                 return procStatusKb / 1024L;
 
+            try
+            {
+                var process = Process.GetCurrentProcess();
+                string processStatusPath = $"/proc/{process.Id}/status";
+                if (TryReadProcFileValueKb(processStatusPath, "VmRSS:", out procStatusKb) && procStatusKb > 0)
+                    return procStatusKb / 1024L;
+            }
+            catch { }
+
+            long residentPages;
+            if (TryReadProcStatmResidentPages(out residentPages) && residentPages > 0)
+            {
+                long pageSizeBytes = Environment.SystemPageSize > 0 ? Environment.SystemPageSize : 4096;
+                long residentBytes = residentPages * pageSizeBytes;
+                if (residentBytes > 0)
+                    return residentBytes / (1024L * 1024L);
+            }
+
+            try
+            {
+                long managedBytes = GC.GetTotalMemory(false);
+                if (managedBytes > 0)
+                    return managedBytes / (1024L * 1024L);
+            }
+            catch { }
+
             return 0;
         }
 
@@ -396,6 +422,36 @@ namespace Oxide.Plugins
                         valueKb = parsed;
                         return true;
                     }
+                }
+            }
+            catch { }
+
+            return false;
+        }
+
+        private bool TryReadProcStatmResidentPages(out long residentPages)
+        {
+            residentPages = 0;
+
+            try
+            {
+                const string statmPath = "/proc/self/statm";
+                if (!File.Exists(statmPath))
+                    return false;
+
+                var content = File.ReadAllText(statmPath).Trim();
+                if (string.IsNullOrEmpty(content))
+                    return false;
+
+                var parts = content.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length < 2)
+                    return false;
+
+                long parsedPages;
+                if (long.TryParse(parts[1], out parsedPages) && parsedPages > 0)
+                {
+                    residentPages = parsedPages;
+                    return true;
                 }
             }
             catch { }
@@ -464,6 +520,17 @@ namespace Oxide.Plugins
             bytesReceived = 0;
             bytesSent = 0;
 
+            if (TryGetNetworkTotalsDotNet(out bytesReceived, out bytesSent))
+                return true;
+
+            return TryGetNetworkTotalsProc(out bytesReceived, out bytesSent);
+        }
+
+        private bool TryGetNetworkTotalsDotNet(out long bytesReceived, out long bytesSent)
+        {
+            bytesReceived = 0;
+            bytesSent = 0;
+
             try
             {
                 var interfaces = NetworkInterface.GetAllNetworkInterfaces();
@@ -486,6 +553,52 @@ namespace Oxide.Plugins
                 }
 
                 return true;
+            }
+            catch { }
+
+            return false;
+        }
+
+        private bool TryGetNetworkTotalsProc(out long bytesReceived, out long bytesSent)
+        {
+            bytesReceived = 0;
+            bytesSent = 0;
+
+            try
+            {
+                const string procNetDevPath = "/proc/net/dev";
+                if (!File.Exists(procNetDevPath))
+                    return false;
+
+                var lines = File.ReadAllLines(procNetDevPath);
+                for (int i = 2; i < lines.Length; i++)
+                {
+                    var line = lines[i];
+                    if (string.IsNullOrWhiteSpace(line) || line.IndexOf(':') < 0)
+                        continue;
+
+                    var split = line.Split(new[] { ':' }, 2);
+                    if (split.Length != 2)
+                        continue;
+
+                    var interfaceName = split[0].Trim();
+                    if (interfaceName == "lo")
+                        continue;
+
+                    var values = split[1].Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                    if (values.Length < 16)
+                        continue;
+
+                    long received;
+                    long sent;
+                    if (!long.TryParse(values[0], out received) || !long.TryParse(values[8], out sent))
+                        continue;
+
+                    bytesReceived += received;
+                    bytesSent += sent;
+                }
+
+                return bytesReceived > 0 || bytesSent > 0;
             }
             catch { }
 
