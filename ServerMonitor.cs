@@ -5,6 +5,7 @@ using System.Linq;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Net.NetworkInformation;
 
 using Rust;
 using Facepunch;
@@ -13,10 +14,11 @@ using UnityEngine;
 using Newtonsoft.Json;
 using Oxide.Core.Plugins;
 using Oxide.Core.Libraries;
+using Oxide.Core.Libraries.Covalence;
 
 namespace Oxide.Plugins
 {
-    [Info("ServerMonitor", "DeltaDinizzz", "0.0.2")]
+    [Info("ServerMonitor", "DeltaDinizzz", "0.0.3")]
     public class ServerMonitor : CovalencePlugin
     {
         // ##StartModule - Global Variables & Config Properties
@@ -44,6 +46,9 @@ namespace Oxide.Plugins
         // CPU sampling (delta between ticks)
         private DateTime _lastCpuTimeUtc = DateTime.MinValue;
         private TimeSpan _lastProcessorTime = TimeSpan.Zero;
+        private DateTime _lastNetworkSampleUtc = DateTime.MinValue;
+        private long _lastBytesReceived = -1;
+        private long _lastBytesSent = -1;
         // ##EndModule - Global Variables & Config Properties
 
         // ##StartModule - Oxide Hooks
@@ -94,6 +99,7 @@ namespace Oxide.Plugins
         // ##StartModule - Core Server Tick Logic
         private void SendServerStatsTick()
         {
+            var connectedPlayers = players.Connected.ToArray();
             var pluginItems = new List<object>();
             if (_shouldCollectFull)
             {
@@ -132,20 +138,23 @@ namespace Oxide.Plugins
             MinimalFPS = 9999; // Reseta depois de ler
 
             // CPU, RAM e Disk (uso real do processo / disco)
+            var nowUtc = DateTime.UtcNow;
             double cpuPercent = 0;
             long ramMb = 0;
+            long ramTotalMb = 0;
             double diskUsedPercent = -1;
+            double? averagePingMs = null;
+            double? networkInKBps = null;
+            double? networkOutKBps = null;
 
             try
             {
-                var process = Process.GetCurrentProcess();
-                process.Refresh();
-
-                // RAM: WorkingSet64 em MB
-                ramMb = process.WorkingSet64 / (1024L * 1024L);
+                ramMb = GetProcessRamMb();
+                ramTotalMb = GetTotalSystemRamMb();
 
                 // CPU: % desde o último tick (TotalProcessorTime delta / wall-clock delta)
-                var nowUtc = DateTime.UtcNow;
+                var process = Process.GetCurrentProcess();
+                process.Refresh();
                 var currentProcessorTime = process.TotalProcessorTime;
                 if (_lastCpuTimeUtc != DateTime.MinValue && _lastCpuTimeUtc < nowUtc)
                 {
@@ -181,6 +190,9 @@ namespace Oxide.Plugins
             }
             catch { /* Process/Refresh pode falhar em alguns ambientes */ }
 
+            averagePingMs = GetAveragePlayerPingMs(connectedPlayers);
+            SampleNetworkIo(nowUtc, out networkInKBps, out networkOutKBps);
+
             // Monta o Payload principal
             var payload = new
             {
@@ -191,7 +203,7 @@ namespace Oxide.Plugins
                 fps = Performance.current.frameRate,
                 minfps = currentMinFps,
                 ent = BaseNetworkable.serverEntities.Count,
-                online = players.Connected.Count(),
+                online = connectedPlayers.Length,
                 maxPlayers = server.MaxPlayers,
                 SleepPlayer = BasePlayer.sleepingPlayerList.Count,
                 JoiningPlayer = ServerMgr.Instance.connectionQueue.Joining,
@@ -203,7 +215,11 @@ namespace Oxide.Plugins
                 isSleeping = _isSleeping,
                 cpu = Math.Round(cpuPercent, 2),
                 ramMb = ramMb,
-                diskUsedPercent = diskUsedPercent >= 0 ? Math.Round(diskUsedPercent, 2) : (double?)null
+                ramTotalMb = ramTotalMb > 0 ? ramTotalMb : (long?)null,
+                ping = averagePingMs.HasValue ? Math.Round(averagePingMs.Value, 2) : (double?)null,
+                diskUsedPercent = diskUsedPercent >= 0 ? Math.Round(diskUsedPercent, 2) : (double?)null,
+                networkInKBps = networkInKBps.HasValue ? Math.Round(networkInKBps.Value, 2) : (double?)null,
+                networkOutKBps = networkOutKBps.HasValue ? Math.Round(networkOutKBps.Value, 2) : (double?)null
             };
 
             string jsonPayload = JsonConvert.SerializeObject(payload);
@@ -320,6 +336,161 @@ namespace Oxide.Plugins
             }, this, RequestMethod.POST, headers);
         }
         // ##EndModule - Core Server Tick Logic
+
+        private long GetProcessRamMb()
+        {
+            try
+            {
+                var process = Process.GetCurrentProcess();
+                process.Refresh();
+                long workingSetBytes = process.WorkingSet64;
+                if (workingSetBytes > 0)
+                    return workingSetBytes / (1024L * 1024L);
+            }
+            catch { }
+
+            long procStatusKb;
+            if (TryReadProcFileValueKb("/proc/self/status", "VmRSS:", out procStatusKb) && procStatusKb > 0)
+                return procStatusKb / 1024L;
+
+            return 0;
+        }
+
+        private long GetTotalSystemRamMb()
+        {
+            long memTotalKb;
+            if (TryReadProcFileValueKb("/proc/meminfo", "MemTotal:", out memTotalKb) && memTotalKb > 0)
+                return memTotalKb / 1024L;
+
+            try
+            {
+                var unitySystemMemoryMb = SystemInfo.systemMemorySize;
+                if (unitySystemMemoryMb > 0)
+                    return unitySystemMemoryMb;
+            }
+            catch { }
+
+            return 0;
+        }
+
+        private bool TryReadProcFileValueKb(string path, string key, out long valueKb)
+        {
+            valueKb = 0;
+
+            try
+            {
+                if (!File.Exists(path))
+                    return false;
+
+                var lines = File.ReadAllLines(path);
+                for (int i = 0; i < lines.Length; i++)
+                {
+                    var line = lines[i];
+                    if (!line.StartsWith(key, StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    var digits = new string(line.Where(char.IsDigit).ToArray());
+                    long parsed;
+                    if (long.TryParse(digits, out parsed) && parsed >= 0)
+                    {
+                        valueKb = parsed;
+                        return true;
+                    }
+                }
+            }
+            catch { }
+
+            return false;
+        }
+
+        private double? GetAveragePlayerPingMs(IPlayer[] connectedPlayers)
+        {
+            try
+            {
+                if (connectedPlayers == null || connectedPlayers.Length == 0)
+                    return null;
+
+                double totalPing = 0;
+                int samples = 0;
+                for (int i = 0; i < connectedPlayers.Length; i++)
+                {
+                    var ping = connectedPlayers[i].Ping;
+                    if (ping < 0)
+                        continue;
+
+                    totalPing += ping;
+                    samples++;
+                }
+
+                if (samples == 0)
+                    return null;
+
+                return totalPing / samples;
+            }
+            catch { }
+
+            return null;
+        }
+
+        private void SampleNetworkIo(DateTime nowUtc, out double? networkInKBps, out double? networkOutKBps)
+        {
+            networkInKBps = null;
+            networkOutKBps = null;
+
+            long bytesReceived;
+            long bytesSent;
+            if (!TryGetNetworkTotals(out bytesReceived, out bytesSent))
+                return;
+
+            if (_lastNetworkSampleUtc != DateTime.MinValue && _lastNetworkSampleUtc < nowUtc && _lastBytesReceived >= 0 && _lastBytesSent >= 0)
+            {
+                var wallSeconds = (nowUtc - _lastNetworkSampleUtc).TotalSeconds;
+                var deltaReceived = bytesReceived - _lastBytesReceived;
+                var deltaSent = bytesSent - _lastBytesSent;
+                if (wallSeconds > 0 && deltaReceived >= 0 && deltaSent >= 0)
+                {
+                    networkInKBps = (deltaReceived / 1024.0) / wallSeconds;
+                    networkOutKBps = (deltaSent / 1024.0) / wallSeconds;
+                }
+            }
+
+            _lastNetworkSampleUtc = nowUtc;
+            _lastBytesReceived = bytesReceived;
+            _lastBytesSent = bytesSent;
+        }
+
+        private bool TryGetNetworkTotals(out long bytesReceived, out long bytesSent)
+        {
+            bytesReceived = 0;
+            bytesSent = 0;
+
+            try
+            {
+                var interfaces = NetworkInterface.GetAllNetworkInterfaces();
+                for (int i = 0; i < interfaces.Length; i++)
+                {
+                    var networkInterface = interfaces[i];
+                    if (networkInterface == null)
+                        continue;
+                    if (networkInterface.OperationalStatus != OperationalStatus.Up)
+                        continue;
+                    if (networkInterface.NetworkInterfaceType == NetworkInterfaceType.Loopback || networkInterface.NetworkInterfaceType == NetworkInterfaceType.Tunnel)
+                        continue;
+
+                    var stats = networkInterface.GetIPStatistics();
+                    if (stats == null)
+                        continue;
+
+                    bytesReceived += stats.BytesReceived;
+                    bytesSent += stats.BytesSent;
+                }
+
+                return true;
+            }
+            catch { }
+
+            return false;
+        }
 
         // ##StartModule - FPSVisor Component
         public class FPSVisor : MonoBehaviour
