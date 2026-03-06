@@ -39,6 +39,7 @@ namespace Oxide.Plugins
 
         private Timer _loopTimer;
         private bool _isSleeping = false;
+        private bool _hasUnloaded = false;
         private const float MinErrorRetrySeconds = 10.0f;
         private readonly Dictionary<string, double> _lastHookSecondsByPlugin = new Dictionary<string, double>();
         private readonly Dictionary<string, double> _maxHookSinceLastTickSecondsByPlugin = new Dictionary<string, double>();
@@ -61,6 +62,7 @@ namespace Oxide.Plugins
         private void Init()
         {
             _instance = this;
+            _hasUnloaded = false;
             if (Config["ServerToken"] == null || string.IsNullOrEmpty((string)Config["ServerToken"]))
             {
                 LoadDefaultConfig();
@@ -85,6 +87,7 @@ namespace Oxide.Plugins
 
         private void Unload()
         {
+            _hasUnloaded = true;
             if (ActiveVisor != null)
             {
                 UnityEngine.Object.Destroy(ActiveVisor);
@@ -99,6 +102,9 @@ namespace Oxide.Plugins
         // ##StartModule - Core Server Tick Logic
         private void SendServerStatsTick()
         {
+            if (_hasUnloaded)
+                return;
+
             var connectedPlayers = players.Connected.ToArray();
             var pluginItems = new List<object>();
             if (_shouldCollectFull)
@@ -233,6 +239,9 @@ namespace Oxide.Plugins
             // Envia o HTTP POST via WebRequest
             webrequest.Enqueue(ApiUrl, jsonPayload, (code, response) =>
             {
+                if (_hasUnloaded)
+                    return;
+
                 float nextDelay = _isSleeping ? _sleepInterval : _updateInterval;
 
                 if (code == 200 || code == 204)
@@ -331,7 +340,8 @@ namespace Oxide.Plugins
                 }
 
                 // Agenda a próxima execução
-                _loopTimer = timer.Once(nextDelay, SendServerStatsTick);
+                if (!_hasUnloaded)
+                    _loopTimer = timer.Once(nextDelay, SendServerStatsTick);
 
             }, this, RequestMethod.POST, headers);
         }
@@ -373,7 +383,7 @@ namespace Oxide.Plugins
 
             try
             {
-                long managedBytes = GC.GetTotalMemory(false);
+                long managedBytes = System.GC.GetTotalMemory(false);
                 if (managedBytes > 0)
                     return managedBytes / (1024L * 1024L);
             }
