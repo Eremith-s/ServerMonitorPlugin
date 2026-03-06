@@ -508,7 +508,12 @@ namespace Oxide.Plugins
             if (!TryGetNetworkTotals(out bytesReceived, out bytesSent))
                 return;
 
-            if (_lastNetworkSampleUtc != DateTime.MinValue && _lastNetworkSampleUtc < nowUtc && _lastBytesReceived >= 0 && _lastBytesSent >= 0)
+            if (_lastNetworkSampleUtc == DateTime.MinValue || _lastBytesReceived < 0 || _lastBytesSent < 0)
+            {
+                networkInKBps = 0;
+                networkOutKBps = 0;
+            }
+            else if (_lastNetworkSampleUtc < nowUtc)
             {
                 var wallSeconds = (nowUtc - _lastNetworkSampleUtc).TotalSeconds;
                 var deltaReceived = bytesReceived - _lastBytesReceived;
@@ -533,7 +538,10 @@ namespace Oxide.Plugins
             if (TryGetNetworkTotalsDotNet(out bytesReceived, out bytesSent))
                 return true;
 
-            return TryGetNetworkTotalsProc(out bytesReceived, out bytesSent);
+            if (TryGetNetworkTotalsProc(out bytesReceived, out bytesSent))
+                return true;
+
+            return TryGetNetworkTotalsNetstat(out bytesReceived, out bytesSent);
         }
 
         private bool TryGetNetworkTotalsDotNet(out long bytesReceived, out long bytesSent)
@@ -563,6 +571,60 @@ namespace Oxide.Plugins
                 }
 
                 return true;
+            }
+            catch { }
+
+            return false;
+        }
+
+        private bool TryGetNetworkTotalsNetstat(out long bytesReceived, out long bytesSent)
+        {
+            bytesReceived = 0;
+            bytesSent = 0;
+
+            try
+            {
+                var startInfo = new ProcessStartInfo
+                {
+                    FileName = "netstat",
+                    Arguments = "-e",
+                    CreateNoWindow = true,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                };
+
+                using (var process = Process.Start(startInfo))
+                {
+                    if (process == null)
+                        return false;
+
+                    var output = process.StandardOutput.ReadToEnd();
+                    process.WaitForExit(2000);
+                    if (string.IsNullOrWhiteSpace(output))
+                        return false;
+
+                    var lines = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                    for (int i = 0; i < lines.Length; i++)
+                    {
+                        var line = lines[i];
+                        var parts = line.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                        if (parts.Length < 2)
+                            continue;
+
+                        long received;
+                        long sent;
+                        if (!long.TryParse(parts[parts.Length - 2], out received) || !long.TryParse(parts[parts.Length - 1], out sent))
+                            continue;
+
+                        if (received < 0 || sent < 0)
+                            continue;
+
+                        bytesReceived = received;
+                        bytesSent = sent;
+                        return true;
+                    }
+                }
             }
             catch { }
 
