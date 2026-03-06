@@ -1,8 +1,10 @@
 
 using System;
+using System.IO;
 using System.Linq;
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 
 using Rust;
 using Facepunch;
@@ -38,6 +40,10 @@ namespace Oxide.Plugins
         private const float MinErrorRetrySeconds = 10.0f;
         private readonly Dictionary<string, double> _lastHookSecondsByPlugin = new Dictionary<string, double>();
         private readonly Dictionary<string, double> _maxHookSinceLastTickSecondsByPlugin = new Dictionary<string, double>();
+
+        // CPU sampling (delta between ticks)
+        private DateTime _lastCpuTimeUtc = DateTime.MinValue;
+        private TimeSpan _lastProcessorTime = TimeSpan.Zero;
         // ##EndModule - Global Variables & Config Properties
 
         // ##StartModule - Oxide Hooks
@@ -125,6 +131,56 @@ namespace Oxide.Plugins
             int currentMinFps = MinimalFPS;
             MinimalFPS = 9999; // Reseta depois de ler
 
+            // CPU, RAM e Disk (uso real do processo / disco)
+            double cpuPercent = 0;
+            long ramMb = 0;
+            double diskUsedPercent = -1;
+
+            try
+            {
+                var process = Process.GetCurrentProcess();
+                process.Refresh();
+
+                // RAM: WorkingSet64 em MB
+                ramMb = process.WorkingSet64 / (1024L * 1024L);
+
+                // CPU: % desde o último tick (TotalProcessorTime delta / wall-clock delta)
+                var nowUtc = DateTime.UtcNow;
+                var currentProcessorTime = process.TotalProcessorTime;
+                if (_lastCpuTimeUtc != DateTime.MinValue && _lastCpuTimeUtc < nowUtc)
+                {
+                    var wallSeconds = (nowUtc - _lastCpuTimeUtc).TotalSeconds;
+                    var cpuSeconds = (currentProcessorTime - _lastProcessorTime).TotalSeconds;
+                    if (wallSeconds > 0 && cpuSeconds >= 0)
+                        cpuPercent = (cpuSeconds / wallSeconds) * 100.0; // Pode passar 100 em multi-core
+                }
+                _lastCpuTimeUtc = nowUtc;
+                _lastProcessorTime = currentProcessorTime;
+
+                // Disk: % usado no drive onde o servidor está a correr
+                try
+                {
+                    var baseDir = AppDomain.CurrentDomain.BaseDirectory;
+                    if (!string.IsNullOrEmpty(baseDir))
+                    {
+                        var root = Path.GetPathRoot(baseDir);
+                        if (!string.IsNullOrEmpty(root))
+                        {
+                            var drive = new DriveInfo(root);
+                            if (drive.IsReady)
+                            {
+                                long total = drive.TotalSize;
+                                long free = drive.AvailableFreeSpace;
+                                if (total > 0)
+                                    diskUsedPercent = (double)(total - free) / total * 100.0;
+                            }
+                        }
+                    }
+                }
+                catch { diskUsedPercent = -1; }
+            }
+            catch { /* Process/Refresh pode falhar em alguns ambientes */ }
+
             // Monta o Payload principal
             var payload = new
             {
@@ -144,7 +200,10 @@ namespace Oxide.Plugins
                 version = server.Version,
                 map = ConVar.Server.level,
                 listPlugins = pluginItems,
-                isSleeping = _isSleeping
+                isSleeping = _isSleeping,
+                cpu = Math.Round(cpuPercent, 2),
+                ramMb = ramMb,
+                diskUsedPercent = diskUsedPercent >= 0 ? Math.Round(diskUsedPercent, 2) : (double?)null
             };
 
             string jsonPayload = JsonConvert.SerializeObject(payload);
