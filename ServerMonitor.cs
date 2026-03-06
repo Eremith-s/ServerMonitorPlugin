@@ -43,6 +43,7 @@ namespace Oxide.Plugins
         private const float MinErrorRetrySeconds = 10.0f;
         private readonly Dictionary<string, double> _lastHookSecondsByPlugin = new Dictionary<string, double>();
         private readonly Dictionary<string, double> _maxHookSinceLastTickSecondsByPlugin = new Dictionary<string, double>();
+        private DateTime _lastFullHookSampleUtc = DateTime.MinValue;
 
         // CPU sampling (delta between ticks)
         private DateTime _lastCpuTimeUtc = DateTime.MinValue;
@@ -105,10 +106,16 @@ namespace Oxide.Plugins
             if (_hasUnloaded)
                 return;
 
+            var nowUtc = DateTime.UtcNow;
             var connectedPlayers = players.Connected.ToArray();
             var pluginItems = new List<object>();
+            double? sampleWindowMs = null;
             if (_shouldCollectFull)
             {
+                if (_lastFullHookSampleUtc != DateTime.MinValue && _lastFullHookSampleUtc < nowUtc)
+                    sampleWindowMs = Math.Max(0.0, (nowUtc - _lastFullHookSampleUtc).TotalMilliseconds);
+                _lastFullHookSampleUtc = nowUtc;
+
                 // Coleta plugins
                 var listPlugins = plugins.PluginManager.GetPlugins().ToArray();
                 var seenPluginNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -155,13 +162,13 @@ namespace Oxide.Plugins
                 // retroativamente todo o hook acumulado do periodo em sleep.
                 _lastHookSecondsByPlugin.Clear();
                 _maxHookSinceLastTickSecondsByPlugin.Clear();
+                _lastFullHookSampleUtc = DateTime.MinValue;
             }
 
             int currentMinFps = MinimalFPS;
             MinimalFPS = 9999; // Reseta depois de ler
 
             // CPU, RAM e Disk (uso real do processo / disco)
-            var nowUtc = DateTime.UtcNow;
             double cpuPercent = 0;
             long ramMb = 0;
             long ramTotalMb = 0;
@@ -234,6 +241,7 @@ namespace Oxide.Plugins
                 uptime = (int)UnityEngine.Time.realtimeSinceStartup,
                 version = server.Version,
                 map = ConVar.Server.level,
+                sampleWindowMs = sampleWindowMs.HasValue ? Math.Round(sampleWindowMs.Value) : (double?)null,
                 listPlugins = pluginItems,
                 isSleeping = _isSleeping,
                 cpu = Math.Round(cpuPercent, 2),
