@@ -18,7 +18,7 @@ using Oxide.Core.Libraries.Covalence;
 
 namespace Oxide.Plugins
 {
-    [Info("ServerMonitor", "DeltaDinizzz", "0.0.3")]
+    [Info("ServerMonitor", "DeltaDinizzz", "0.0.4")]
     public class ServerMonitor : CovalencePlugin
     {
         // ##StartModule - Global Variables & Config Properties
@@ -111,17 +111,24 @@ namespace Oxide.Plugins
             {
                 // Coleta plugins
                 var listPlugins = plugins.PluginManager.GetPlugins().ToArray();
+                var seenPluginNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 for (var i = 0; i < listPlugins.Length; i++)
                 {
                     var pluginName = listPlugins[i].Name;
+                    seenPluginNames.Add(pluginName);
                     var hookSeconds = listPlugins[i].TotalHookTime.TotalSeconds;
                     double previousHookSeconds;
-                    _lastHookSecondsByPlugin.TryGetValue(pluginName, out previousHookSeconds);
-                    var deltaHookSeconds = Math.Max(0.0, hookSeconds - previousHookSeconds);
+                    var hasPreviousHookSample = _lastHookSecondsByPlugin.TryGetValue(pluginName, out previousHookSeconds);
+                    var hookCounterReset = hasPreviousHookSample && hookSeconds < previousHookSeconds;
+                    var deltaHookSeconds = (!hasPreviousHookSample || hookCounterReset)
+                        ? 0.0
+                        : Math.Max(0.0, hookSeconds - previousHookSeconds);
 
                     double previousMaxSinceLastTick;
-                    _maxHookSinceLastTickSecondsByPlugin.TryGetValue(pluginName, out previousMaxSinceLastTick);
-                    var nextMaxSinceLastTick = Math.Max(previousMaxSinceLastTick, deltaHookSeconds);
+                    var hasPreviousMax = _maxHookSinceLastTickSecondsByPlugin.TryGetValue(pluginName, out previousMaxSinceLastTick);
+                    var nextMaxSinceLastTick = (!hasPreviousHookSample || hookCounterReset)
+                        ? 0.0
+                        : Math.Max(hasPreviousMax ? previousMaxSinceLastTick : 0.0, deltaHookSeconds);
                     _maxHookSinceLastTickSecondsByPlugin[pluginName] = nextMaxSinceLastTick;
                     _lastHookSecondsByPlugin[pluginName] = hookSeconds;
 
@@ -138,6 +145,16 @@ namespace Oxide.Plugins
 
                     _maxHookSinceLastTickSecondsByPlugin[pluginName] = 0.0;
                 }
+
+                PruneStaleHookSamples(seenPluginNames);
+            }
+            else
+            {
+                // Enquanto a dashboard estiver sem viewers e o payload vier enxuto,
+                // zeramos o baseline para evitar que o proximo tick "full" cobre
+                // retroativamente todo o hook acumulado do periodo em sleep.
+                _lastHookSecondsByPlugin.Clear();
+                _maxHookSinceLastTickSecondsByPlugin.Clear();
             }
 
             int currentMinFps = MinimalFPS;
@@ -635,6 +652,7 @@ namespace Oxide.Plugins
         {
             bytesReceived = 0;
             bytesSent = 0;
+            bool parsedAnyInterface = false;
 
             try
             {
@@ -666,15 +684,40 @@ namespace Oxide.Plugins
                     if (!long.TryParse(values[0], out received) || !long.TryParse(values[8], out sent))
                         continue;
 
+                    parsedAnyInterface = true;
                     bytesReceived += received;
                     bytesSent += sent;
                 }
 
-                return bytesReceived > 0 || bytesSent > 0;
+                return parsedAnyInterface;
             }
             catch { }
 
             return false;
+        }
+
+        private void PruneStaleHookSamples(HashSet<string> seenPluginNames)
+        {
+            if (seenPluginNames == null || seenPluginNames.Count == 0)
+            {
+                _lastHookSecondsByPlugin.Clear();
+                _maxHookSinceLastTickSecondsByPlugin.Clear();
+                return;
+            }
+
+            var lastKeys = _lastHookSecondsByPlugin.Keys.ToArray();
+            for (int i = 0; i < lastKeys.Length; i++)
+            {
+                if (!seenPluginNames.Contains(lastKeys[i]))
+                    _lastHookSecondsByPlugin.Remove(lastKeys[i]);
+            }
+
+            var maxKeys = _maxHookSinceLastTickSecondsByPlugin.Keys.ToArray();
+            for (int i = 0; i < maxKeys.Length; i++)
+            {
+                if (!seenPluginNames.Contains(maxKeys[i]))
+                    _maxHookSinceLastTickSecondsByPlugin.Remove(maxKeys[i]);
+            }
         }
 
         // ##StartModule - FPSVisor Component
