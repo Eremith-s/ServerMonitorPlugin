@@ -33,7 +33,6 @@ namespace Oxide.Plugins
         
         // --- DYNAMIC INTERVALS (Provided by the Web API) ---
         private float _updateInterval = 2.0f;
-        private float _sleepInterval = 60.0f;
         private string _monitorMode = "adaptive"; // adaptive | always_on
         private bool _shouldCollectFull = true;
 
@@ -106,64 +105,114 @@ namespace Oxide.Plugins
             if (_hasUnloaded)
                 return;
 
+            // ── HEARTBEAT MODE ──
+            // When sleeping in adaptive mode, send only a lightweight ping
+            // so the API can tell us when to wake up. No data collection.
+            if (_isSleeping && _monitorMode != "always_on")
+            {
+                // Reset baselines so the first "full" tick after waking
+                // doesn't retroactively cover the entire sleep period.
+                _lastHookSecondsByPlugin.Clear();
+                _maxHookSinceLastTickSecondsByPlugin.Clear();
+                _lastFullHookSampleUtc = DateTime.MinValue;
+                _lastCpuTimeUtc = DateTime.MinValue;
+                _lastNetworkSampleUtc = DateTime.MinValue;
+                _lastBytesReceived = -1;
+                _lastBytesSent = -1;
+
+                var heartbeat = new { method = "heartbeat", token = ServerToken };
+                string heartbeatJson = JsonConvert.SerializeObject(heartbeat);
+                var hbHeaders = new Dictionary<string, string> { { "Content-Type", "application/json" } };
+
+                webrequest.Enqueue(ApiUrl, heartbeatJson, (code, response) =>
+                {
+                    if (_hasUnloaded) return;
+                    if (code == 200 || code == 204)
+                    {
+                        try
+                        {
+                            var jr = JsonConvert.DeserializeObject<Dictionary<string, object>>(response);
+                            if (jr != null)
+                            {
+                                if (jr.ContainsKey("updateInterval"))
+                                    float.TryParse(jr["updateInterval"].ToString(), out _updateInterval);
+                                if (jr.ContainsKey("monitorMode"))
+                                    _monitorMode = jr["monitorMode"].ToString();
+                                if (jr.ContainsKey("shouldCollectFull"))
+                                {
+                                    bool parsed;
+                                    if (bool.TryParse(jr["shouldCollectFull"].ToString(), out parsed))
+                                        _shouldCollectFull = parsed;
+                                }
+                                if (jr.ContainsKey("state"))
+                                {
+                                    string st = jr["state"].ToString();
+                                    if (st == "active")
+                                    {
+                                        Puts($"[ServerMonitor] Dashboard aberta/detectada. Saindo do Sleep Mode! Atualizando a cada {_updateInterval}s...");
+                                        _isSleeping = false;
+                                    }
+                                }
+                                if (_monitorMode == "always_on")
+                                    _isSleeping = false;
+                            }
+                        }
+                        catch { }
+                    }
+                    if (!_hasUnloaded)
+                        _loopTimer = timer.Once(_updateInterval, SendServerStatsTick);
+                }, this, RequestMethod.POST, hbHeaders);
+                return;
+            }
+
+            // ── FULL DATA COLLECTION ──
             var nowUtc = DateTime.UtcNow;
             var connectedPlayers = players.Connected.ToArray();
             var pluginItems = new List<object>();
             double? sampleWindowMs = null;
-            if (_shouldCollectFull)
-            {
-                if (_lastFullHookSampleUtc != DateTime.MinValue && _lastFullHookSampleUtc < nowUtc)
-                    sampleWindowMs = Math.Max(0.0, (nowUtc - _lastFullHookSampleUtc).TotalMilliseconds);
-                _lastFullHookSampleUtc = nowUtc;
 
-                // Coleta plugins
-                var listPlugins = plugins.PluginManager.GetPlugins().ToArray();
-                var seenPluginNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                for (var i = 0; i < listPlugins.Length; i++)
+            if (_lastFullHookSampleUtc != DateTime.MinValue && _lastFullHookSampleUtc < nowUtc)
+                sampleWindowMs = Math.Max(0.0, (nowUtc - _lastFullHookSampleUtc).TotalMilliseconds);
+            _lastFullHookSampleUtc = nowUtc;
+
+            // Coleta plugins
+            var listPlugins = plugins.PluginManager.GetPlugins().ToArray();
+            var seenPluginNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            for (var i = 0; i < listPlugins.Length; i++)
+            {
+                var pluginName = listPlugins[i].Name;
+                seenPluginNames.Add(pluginName);
+                var hookSeconds = listPlugins[i].TotalHookTime.TotalSeconds;
+                double previousHookSeconds;
+                var hasPreviousHookSample = _lastHookSecondsByPlugin.TryGetValue(pluginName, out previousHookSeconds);
+                var hookCounterReset = hasPreviousHookSample && hookSeconds < previousHookSeconds;
+                var deltaHookSeconds = (!hasPreviousHookSample || hookCounterReset)
+                    ? 0.0
+                    : Math.Max(0.0, hookSeconds - previousHookSeconds);
+
+                double previousMaxSinceLastTick;
+                var hasPreviousMax = _maxHookSinceLastTickSecondsByPlugin.TryGetValue(pluginName, out previousMaxSinceLastTick);
+                var nextMaxSinceLastTick = (!hasPreviousHookSample || hookCounterReset)
+                    ? 0.0
+                    : Math.Max(hasPreviousMax ? previousMaxSinceLastTick : 0.0, deltaHookSeconds);
+                _maxHookSinceLastTickSecondsByPlugin[pluginName] = nextMaxSinceLastTick;
+                _lastHookSecondsByPlugin[pluginName] = hookSeconds;
+
+                pluginItems.Add(new
                 {
-                    var pluginName = listPlugins[i].Name;
-                    seenPluginNames.Add(pluginName);
-                    var hookSeconds = listPlugins[i].TotalHookTime.TotalSeconds;
-                    double previousHookSeconds;
-                    var hasPreviousHookSample = _lastHookSecondsByPlugin.TryGetValue(pluginName, out previousHookSeconds);
-                    var hookCounterReset = hasPreviousHookSample && hookSeconds < previousHookSeconds;
-                    var deltaHookSeconds = (!hasPreviousHookSample || hookCounterReset)
-                        ? 0.0
-                        : Math.Max(0.0, hookSeconds - previousHookSeconds);
+                    name = pluginName,
+                    version = listPlugins[i].Version.ToString(),
+                    author = listPlugins[i].Author,
+                    hash = pluginName.GetHashCode(),
+                    time = deltaHookSeconds,
+                    hookTimeMs = deltaHookSeconds * 1000.0,
+                    hookMaxSinceLastTickMs = nextMaxSinceLastTick * 1000.0
+                });
 
-                    double previousMaxSinceLastTick;
-                    var hasPreviousMax = _maxHookSinceLastTickSecondsByPlugin.TryGetValue(pluginName, out previousMaxSinceLastTick);
-                    var nextMaxSinceLastTick = (!hasPreviousHookSample || hookCounterReset)
-                        ? 0.0
-                        : Math.Max(hasPreviousMax ? previousMaxSinceLastTick : 0.0, deltaHookSeconds);
-                    _maxHookSinceLastTickSecondsByPlugin[pluginName] = nextMaxSinceLastTick;
-                    _lastHookSecondsByPlugin[pluginName] = hookSeconds;
-
-                    pluginItems.Add(new
-                    {
-                        name = pluginName,
-                        version = listPlugins[i].Version.ToString(),
-                        author = listPlugins[i].Author,
-                        hash = pluginName.GetHashCode(),
-                        time = deltaHookSeconds,
-                        hookTimeMs = deltaHookSeconds * 1000.0,
-                        hookMaxSinceLastTickMs = nextMaxSinceLastTick * 1000.0
-                    });
-
-                    _maxHookSinceLastTickSecondsByPlugin[pluginName] = 0.0;
-                }
-
-                PruneStaleHookSamples(seenPluginNames);
+                _maxHookSinceLastTickSecondsByPlugin[pluginName] = 0.0;
             }
-            else
-            {
-                // Enquanto a dashboard estiver sem viewers e o payload vier enxuto,
-                // zeramos o baseline para evitar que o proximo tick "full" cobre
-                // retroativamente todo o hook acumulado do periodo em sleep.
-                _lastHookSecondsByPlugin.Clear();
-                _maxHookSinceLastTickSecondsByPlugin.Clear();
-                _lastFullHookSampleUtc = DateTime.MinValue;
-            }
+
+            PruneStaleHookSamples(seenPluginNames);
 
             int currentMinFps = MinimalFPS;
             MinimalFPS = 9999; // Reseta depois de ler
@@ -267,7 +316,7 @@ namespace Oxide.Plugins
                 if (_hasUnloaded)
                     return;
 
-                float nextDelay = _isSleeping ? _sleepInterval : _updateInterval;
+                float nextDelay = _updateInterval;
 
                 if (code == 200 || code == 204)
                 {
@@ -275,16 +324,12 @@ namespace Oxide.Plugins
                     {
                         var jsonResponse = JsonConvert.DeserializeObject<Dictionary<string, object>>(response);
                         
-                        // Captura novos tempos enviador pelo Admin Panel da Dashboard Web
                         if (jsonResponse != null)
                         {
                             if (jsonResponse.ContainsKey("updateInterval"))
                             {
                                 float.TryParse(jsonResponse["updateInterval"].ToString(), out _updateInterval);
-                            }
-                            if (jsonResponse.ContainsKey("sleepInterval"))
-                            {
-                                float.TryParse(jsonResponse["sleepInterval"].ToString(), out _sleepInterval);
+                                nextDelay = _updateInterval;
                             }
 
                             if (jsonResponse.ContainsKey("monitorMode"))
@@ -300,18 +345,15 @@ namespace Oxide.Plugins
                                 }
                             }
 
-                            // Se a API informou state "sleep", ninguém está online no site (modo adaptive).
                             if (jsonResponse.ContainsKey("state"))
                             {
                                 string state = jsonResponse["state"].ToString();
                                 if (state == "sleep")
                                 {
                                     if (!_isSleeping)
-                                        Puts($"[ServerMonitor] Ninguém na dashboard. Entrando em Sleep Mode ({_sleepInterval}s) para economizar recursos...");
+                                        Puts($"[ServerMonitor] Ninguém na dashboard. Entrando em Sleep Mode (heartbeat a cada {_updateInterval}s)...");
                                     
                                     _isSleeping = true;
-                                    // Keep sleep responsive: cap idle polling to avoid 60s+ wake delays.
-                                    nextDelay = Math.Min(_sleepInterval, 15.0f);
                                 }
                                 else if (state == "active")
                                 {
@@ -319,7 +361,6 @@ namespace Oxide.Plugins
                                         Puts($"[ServerMonitor] Dashboard aberta/detectada. Saindo do Sleep Mode! Atualizando a cada {_updateInterval}s...");
                                     
                                     _isSleeping = false;
-                                    nextDelay = _updateInterval;
                                 }
                                 else if (state == "degraded")
                                 {
@@ -331,7 +372,6 @@ namespace Oxide.Plugins
                             if (_monitorMode == "always_on")
                             {
                                 _isSleeping = false;
-                                nextDelay = _updateInterval;
                             }
                             // C# Native RCON-less execution 
                             if (jsonResponse.ContainsKey("pendingCommands"))
@@ -356,9 +396,8 @@ namespace Oxide.Plugins
                 }
                 else
                 {
-                    // Em erro transitório de rede/proxy, aplica backoff curto (não entra em sleep longo).
-                    // Sleep real deve ser controlado pelo state "sleep" vindo da API.
-                    float retryDelay = Mathf.Clamp(Math.Max(_updateInterval * 2.0f, MinErrorRetrySeconds), MinErrorRetrySeconds, _sleepInterval);
+                    // Em erro transitório de rede/proxy, aplica backoff curto.
+                    float retryDelay = Math.Max(_updateInterval * 2.0f, MinErrorRetrySeconds);
                     Puts($"[ServerMonitor] HTTP Error {code} - Response: {(response ?? "null")}. Retrying in {retryDelay:0.0}s...");
                     _isSleeping = false;
                     nextDelay = retryDelay;
